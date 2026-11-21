@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AutoClipper — YouTube ke Reels/TikTok/Shorts</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>">
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="logo">🎬</span>
+    <div>
+      <h1>AutoClipper</h1>
+      <p>YouTube → Klip vertikal Reels / TikTok / Shorts + subtitle otomatis</p>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span id="health-badge" class="badge" title="Status sistem">memeriksa…</span>
+    <button id="btn-settings" class="btn btn-ghost" title="Pengaturan">⚙️ Pengaturan</button>
+  </div>
+</header>
+
+<main>
+  <!-- LANGKAH 1: LINK -->
+  <section class="card" id="card-url">
+    <h2><span class="step">1</span> Tempel link YouTube</h2>
+    <div class="url-row">
+      <input id="url-input" type="text" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" spellcheck="false">
+      <button id="btn-preview" class="btn btn-primary">Periksa</button>
+    </div>
+    <p id="url-error" class="error hidden"></p>
+
+    <div id="preview-card" class="preview hidden">
+      <img id="preview-thumb" src="" alt="">
+      <div class="preview-info">
+        <h3 id="preview-title"></h3>
+        <p id="preview-channel"></p>
+        <p id="preview-duration"></p>
+      </div>
+    </div>
+  </section>
+
+  <!-- LANGKAH 2: OPSI -->
+  <section class="card hidden" id="card-options">
+    <h2><span class="step">2</span> Atur klip kamu</h2>
+
+    <div class="opt-group">
+      <label>Platform tujuan</label>
+      <div class="chips" id="platform-chips">
+        <label class="chip"><input type="checkbox" value="reels"> 📸 Reels</label>
+        <label class="chip"><input type="checkbox" value="tiktok"> 🎵 TikTok</label>
+        <label class="chip checked"><input type="checkbox" value="shorts" checked> ▶️ Shorts</label>
+      </div>
+      <p class="hint">Format video-nya sama, yang dibedakan: <b>caption &amp; hashtag</b> yang
+      disarankan di hasil (tiap platform punya set sendiri, bisa dicopy terpisah).
+      Batas durasi per platform: Shorts/TikTok 60s · Reels 90s.</p>
+    </div>
+
+    <div class="opt-group">
+      <label>Rasio video</label>
+      <div class="chips" id="ratio-chips">
+        <label class="chip checked"><input type="radio" name="ratio" value="9:16" checked> 📱 9:16 Vertikal <span class="rec-badge">Rekomendasi</span></label>
+        <label class="chip"><input type="radio" name="ratio" value="1:1"> ⬛ 1:1 Kotak</label>
+        <label class="chip"><input type="radio" name="ratio" value="16:9"> 🖥️ 16:9 Landscape</label>
+      </div>
+    </div>
+
+    <div class="opt-group">
+      <label>Gaya klip</label>
+      <div class="chips" id="mode-chips">
+        <label class="chip checked"><input type="radio" name="clipmode" value="summary" checked> 📝 Rangkuman <span class="rec-badge">Disarankan</span></label>
+        <label class="chip"><input type="radio" name="clipmode" value="single"> ✂️ Momen tunggal</label>
+      </div>
+      <p class="hint"><b>Rangkuman</b> = beberapa bagian terpenting dari sepanjang video
+      digabung jadi 1 klip padat dengan jump cut (ala TikTok).
+      <b>Momen tunggal</b> = 1 potongan kontinyu di momen terbaik.</p>
+    </div>
+
+    <div class="opt-group">
+      <label>Layout gambar</label>
+      <div class="chips" id="layout-chips">
+        <label class="chip checked"><input type="radio" name="layout" value="blur" checked> 🌫️ Full + Blur <span class="rec-badge">Rekomendasi</span></label>
+        <label class="chip"><input type="radio" name="layout" value="crop"> ✂️ Crop tengah</label>
+      </div>
+      <p class="hint"><b>Full + Blur</b> = gambar utuh tampil penuh, sisi kosong diisi blur —
+      <i>tidak ada bagian yang terpotong</i>. <b>Crop tengah</b> = fokus bagian tengah,
+      sisi kiri-kanan terpotong.</p>
+    </div>
+
+    <div class="opt-grid">
+      <div class="opt-group">
+        <label>Resolusi</label>
+        <div class="chips" id="res-chips">
+          <label class="chip checked"><input type="radio" name="resolution" value="720" checked> 720p</label>
+          <label class="chip"><input type="radio" name="resolution" value="1080"> 1080p (HD)</label>
+        </div>
+      </div>
+
+      <div class="opt-group">
+        <label>Subtitle <small>(teks yang dibakar ke dalam video)</small></label>
+        <label class="switch">
+          <input type="checkbox" id="sub-toggle" checked>
+          <span class="slider"></span>
+          <span class="switch-label">Aktifkan subtitle</span>
+        </label>
+        <div id="sub-style-row">
+          <div class="dur-btns" id="sub-style-btns">
+            <button type="button" class="dur active" data-style="karaoke">✨ Karaoke</button>
+            <button type="button" class="dur" data-style="klasik">Klasik</button>
+          </div>
+          <div class="sub-preview karaoke" id="sub-preview">
+            <span class="sub-preview-label">Contoh tampilan</span>
+            <div class="sub-preview-text" id="sub-preview-text"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="opt-grid">
+      <div class="opt-group">
+        <label>Durasi tiap klip</label>
+        <div class="dur-btns" id="dur-btns">
+          <button type="button" class="dur" data-dur="15">15 detik</button>
+          <button type="button" class="dur active" data-dur="30">30 detik ⭐</button>
+          <button type="button" class="dur" data-dur="60">60 detik</button>
+        </div>
+      </div>
+      <div class="opt-group">
+        <label>Jumlah klip yang direkomendasikan: <b id="val-count">3</b></label>
+        <input type="range" id="clip-count" min="1" max="10" value="3">
+        <p class="hint">AI akan mencari momen sebanyak ini (+2 opsi cadangan) — kamu pilih sendiri nanti.</p>
+      </div>
+    </div>
+
+    <button id="btn-analyze" class="btn btn-primary btn-lg">🔍 Cari Momen Terbaik</button>
+  </section>
+
+  <!-- LANGKAH 3: PROGRESS -->
+  <section class="card hidden" id="card-progress">
+    <h2><span class="step">3</span> <span id="progress-title">Memproses…</span></h2>
+    <div class="progress-bar"><div id="progress-fill"></div></div>
+    <p id="progress-msg">Menyiapkan…</p>
+    <pre id="progress-log" class="log"></pre>
+  </section>
+
+  <!-- REKOMENDASI MOMEN -->
+  <section class="card hidden" id="card-moments">
+    <h2>💡 Rekomendasi momen terbaik <span id="moments-source" class="badge"></span></h2>
+    <p class="hint">Centang momen yang mau dijadikan klip, lalu klik buat klip.</p>
+    <div id="moments-list" class="moments"></div>
+    <button id="btn-render" class="btn btn-primary btn-lg">✂️ Buat Klip Terpilih (<span id="sel-count">0</span>)</button>
+  </section>
+
+  <!-- HASIL -->
+  <section class="card hidden" id="card-results">
+    <h2>✅ Klip siap! <button id="btn-open-folder" class="btn btn-ghost btn-sm">📂 Buka folder</button></h2>
+    <div id="results-grid" class="results"></div>
+  </section>
+
+  <p id="global-error" class="error hidden"></p>
+</main>
+
+<!-- MODAL SETTINGS -->
+<div id="modal-settings" class="modal hidden">
+  <div class="modal-box">
+    <h2>⚙️ Pengaturan</h2>
+    <div class="opt-group">
+      <label>API key Z.ai <small>(gratis — daftar di z.ai → API Keys)</small></label>
+      <input id="set-api-key" type="password" placeholder="kosongkan = mode heuristik lokal">
+      <p class="hint">Dengan API key, momen dipilih AI (GLM Flash — gratis). Tanpa key, dipilih heuristik lokal.</p>
+    </div>
+    <div class="opt-grid">
+      <div class="opt-group">
+        <label>Model AI</label>
+        <input id="set-model" type="text" placeholder="glm-4.5-flash">
+      </div>
+      <div class="opt-group">
+        <label>Model Whisper <small>(akurasi vs kecepatan)</small></label>
+        <select id="set-whisper">
+          <option value="tiny">tiny — paling cepat (kurang akurat)</option>
+          <option value="base">base — cepat</option>
+          <option value="small">small — lebih akurat (BAHASA Indonesia disarankan)</option>
+          <option value="medium">medium — paling akurat, lambat</option>
+        </select>
+      </div>
+    </div>
+    <div class="opt-group">
+      <label>Cookies YouTube <small>(untuk video yang diblokir deteksi bot)</small></label>
+      <div class="opt-grid">
+        <div class="opt-group">
+          <label><small>Dari browser terpasang</small></label>
+          <select id="set-cookies-browser">
+            <option value="">Tidak pakai</option>
+            <option value="firefox">Firefox</option>
+            <option value="edge">Edge (sering gagal — enkripsi baru)</option>
+            <option value="chrome">Chrome (sering gagal — enkripsi baru)</option>
+            <option value="brave">Brave</option>
+            <option value="opera">Opera</option>
+          </select>
+        </div>
+        <div class="opt-group">
+          <label><small>atau file cookies.txt</small></label>
+          <input id="set-cookies-file" type="text" placeholder="C:\path\cookies.txt">
+        </div>
+      </div>
+      <p class="hint">Kalau ada video yang muncul "diblokir deteksi bot": ekspor cookies dari
+      browser yang login YouTube pakai ekstensi <b>Get cookies.txt LOCALLY</b>, lalu isi path
+      file-nya di atas. File cookies berisi sesi login — jangan dibagikan ke siapa pun.</p>
+    </div>
+    <div class="modal-actions">
+      <button id="btn-settings-cancel" class="btn btn-ghost">Batal</button>
+      <button id="btn-settings-save" class="btn btn-primary">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<!-- PiP PLAYER (preview momen melayang) -->
+<div id="pip-player" class="pip hidden">
+  <div class="pip-header">
+    <span id="pip-title" class="pip-title">Preview momen</span>
+    <button id="pip-close" class="pip-close" title="Tutup (video berhenti)">✕</button>
+  </div>
+  <video id="pip-video" controls playsinline></video>
+</div>
+
+<footer>AutoClipper — berjalan 100% lokal di komputermu. File hasil ada di folder <code>output/</code>.</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,22 @@
+# Data pribadi & rahasia — JANGAN pernah di-upload
+# config.json berisi API key Z.ai & path cookies (sesi login)
+config.json
+# hasil klip & cache video (besar & pribadi)
+output/
+# sesi login YouTube
+cookies.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Model cache (diunduh otomatis saat pertama kali)
+models/
+
+# Sistem
+.DS_Store
+Thumbs.db
+*.log

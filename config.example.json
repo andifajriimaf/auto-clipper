@@ -1,0 +1,9 @@
+{
+  "zai_api_key": "",
+  "zai_model": "glm-4.5-flash",
+  "zai_base_url": "https://api.z.ai/api/paas/v4/chat/completions",
+  "whisper_model": "base",
+  "output_dir": "",
+  "cookies_browser": "",
+  "cookies_file": ""
+}
