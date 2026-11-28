@@ -15,6 +15,9 @@ _defaults = {
     "output_dir": str(BASE_DIR / "output"),
     "cookies_browser": "",            # "" | edge | chrome | firefox | brave | opera
     "cookies_file": "",               # path ke cookies.txt hasil ekspor ekstensi
+    "render_encoder": "cpu",          # cpu (stabil) | auto | qsv (GPU, bisa bikin layar kedap)
+    "channels": [],                   # daftar channel yang dipantau
+    "channel_auto": False,            # cek otomatis video baru tiap 30 menit
 }
 
 _lock = threading.Lock()

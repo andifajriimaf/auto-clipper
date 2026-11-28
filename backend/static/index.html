@@ -33,6 +33,16 @@
     </div>
     <p id="url-error" class="error hidden"></p>
 
+    <div class="or-divider">— atau upload video dari laptop —</div>
+    <div class="url-row">
+      <input type="file" id="file-input" accept=".mp4,.mkv,.webm,.mov,.avi" hidden>
+      <button id="btn-upload" class="btn">📁 Pilih video</button>
+      <div class="upload-progress hidden" id="upload-progress">
+        <div class="upload-bar"><div id="upload-fill"></div></div>
+        <span id="upload-pct">0%</span>
+      </div>
+    </div>
+
     <div id="preview-card" class="preview hidden">
       <img id="preview-thumb" src="" alt="">
       <div class="preview-info">
@@ -83,11 +93,13 @@
       <label>Layout gambar</label>
       <div class="chips" id="layout-chips">
         <label class="chip checked"><input type="radio" name="layout" value="blur" checked> 🌫️ Full + Blur <span class="rec-badge">Rekomendasi</span></label>
+        <label class="chip"><input type="radio" name="layout" value="crop_face"> 🎯 Crop ikut wajah</label>
         <label class="chip"><input type="radio" name="layout" value="crop"> ✂️ Crop tengah</label>
       </div>
-      <p class="hint"><b>Full + Blur</b> = gambar utuh tampil penuh, sisi kosong diisi blur —
-      <i>tidak ada bagian yang terpotong</i>. <b>Crop tengah</b> = fokus bagian tengah,
-      sisi kiri-kanan terpotong.</p>
+      <p class="hint"><b>Full + Blur</b> = gambar utuh penuh, sisi blur — tidak terpotong.
+      <b>Crop ikut wajah</b> = crop vertikal yang <i>mengikuti posisi wajah pembicara</i>
+      (butuh wajah terlihat; fallback ke tengah kalau tidak ada). <b>Crop tengah</b> =
+      fokus bagian tengah saja.</p>
     </div>
 
     <div class="opt-grid">
@@ -107,9 +119,12 @@
           <span class="switch-label">Aktifkan subtitle</span>
         </label>
         <div id="sub-style-row">
-          <div class="dur-btns" id="sub-style-btns">
+          <div class="dur-btns wrap" id="sub-style-btns">
             <button type="button" class="dur active" data-style="karaoke">✨ Karaoke</button>
             <button type="button" class="dur" data-style="klasik">Klasik</button>
+            <button type="button" class="dur" data-style="box">📦 Box</button>
+            <button type="button" class="dur" data-style="glow">💫 Glow</button>
+            <button type="button" class="dur" data-style="word">1️⃣ 1 Word</button>
           </div>
           <div class="sub-preview karaoke" id="sub-preview">
             <span class="sub-preview-label">Contoh tampilan</span>
@@ -160,6 +175,30 @@
     <div id="results-grid" class="results"></div>
   </section>
 
+  <!-- CHANNEL MONITOR -->
+  <section class="card" id="card-channels">
+    <h2>📺 Channel monitor
+      <button id="btn-ch-refresh" class="btn btn-ghost btn-sm">🔄 Cek semua</button>
+    </h2>
+    <div class="url-row">
+      <input id="ch-url" type="text" placeholder="https://www.youtube.com/@nama-channel" spellcheck="false">
+      <button id="btn-ch-add" class="btn btn-primary">Tambah</button>
+    </div>
+    <label class="switch ch-auto">
+      <input type="checkbox" id="ch-auto-toggle">
+      <span class="slider"></span>
+      <span class="switch-label">Cek otomatis video baru tiap 30 menit</span>
+    </label>
+    <div id="ch-list" class="ch-list"></div>
+    <p class="hint">Video baru dari channel ini otomatis di-clip (rangkuman, 3 klip, 30 detik, blur) saat ditemukan.</p>
+  </section>
+
+  <!-- RIWAYAT JOB -->
+  <section class="card" id="card-history">
+    <h2>🕘 Riwayat job</h2>
+    <div id="history-list" class="history-list"></div>
+  </section>
+
   <p id="global-error" class="error hidden"></p>
 </main>
 
@@ -177,16 +216,24 @@
         <label>Model AI</label>
         <input id="set-model" type="text" placeholder="glm-4.5-flash">
       </div>
-      <div class="opt-group">
-        <label>Model Whisper <small>(akurasi vs kecepatan)</small></label>
-        <select id="set-whisper">
-          <option value="tiny">tiny — paling cepat (kurang akurat)</option>
-          <option value="base">base — cepat</option>
-          <option value="small">small — lebih akurat (BAHASA Indonesia disarankan)</option>
-          <option value="medium">medium — paling akurat, lambat</option>
-        </select>
+      <div class="opt-grid">
+        <div class="opt-group">
+          <label>Model Whisper <small>(akurasi vs kecepatan)</small></label>
+          <select id="set-whisper">
+            <option value="tiny">tiny — paling cepat (kurang akurat)</option>
+            <option value="base">base — cepat</option>
+            <option value="small">small — lebih akurat (BAHASA Indonesia disarankan)</option>
+            <option value="medium">medium — paling akurat, lambat</option>
+          </select>
+        </div>
+        <div class="opt-group">
+          <label>Encoder render</label>
+          <select id="set-encoder">
+            <option value="cpu">CPU — paling stabil (disarankan)</option>
+            <option value="auto">GPU Intel QSV — lebih cepat, bisa bikin layar kedap</option>
+          </select>
+        </div>
       </div>
-    </div>
     <div class="opt-group">
       <label>Cookies YouTube <small>(untuk video yang diblokir deteksi bot)</small></label>
       <div class="opt-grid">

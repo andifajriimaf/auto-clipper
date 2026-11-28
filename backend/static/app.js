@@ -7,6 +7,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const state = {
   preview: null,        // metadata video setelah /api/preview
+  uploadId: null,       // kalau sumber = file upload
   analyzeId: null,      // job id fase analisis
   jobId: null,          // job id fase render
   pollTimer: null,
@@ -23,6 +24,9 @@ const SUB_PREVIEWS = {
     '<span class="word sung">NEVER</span> <span class="word sung">GONNA</span> ' +
     '<span class="word active">GIVE</span> <span class="word">YOU</span> <span class="word">UP</span>',
   klasik: '<span class="word">NEVER GONNA GIVE YOU UP</span>',
+  box: '<span class="word box-prev">NEVER GONNA GIVE YOU UP</span>',
+  glow: '<span class="word glow-prev">NEVER GONNA</span>',
+  word: '<span class="word big-prev">GIVE</span>',
 };
 
 // ------------------------------------------------------------- helpers
@@ -178,6 +182,56 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !$("#pip-player").classList.contains("hidden")) closePip();
 });
 
+// ------------------------------------------------------------- upload video
+$("#btn-upload").addEventListener("click", () => $("#file-input").click());
+
+$("#file-input").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  hideError("#url-error");
+  $("#upload-progress").classList.remove("hidden");
+  $("#btn-upload").disabled = true;
+
+  const xhr = new XMLHttpRequest();
+  const form = new FormData();
+  form.append("file", file);
+  xhr.open("POST", "/api/upload");
+  xhr.upload.onprogress = (ev) => {
+    if (ev.lengthComputable) {
+      const pct = Math.round(ev.loaded / ev.total * 100);
+      $("#upload-fill").style.width = pct + "%";
+      $("#upload-pct").textContent = pct + "%";
+    }
+  };
+  xhr.onload = () => {
+    $("#btn-upload").disabled = false;
+    let data = {};
+    try { data = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status === 200) {
+      state.uploadId = data.upload_id;
+      state.preview = { title: data.filename, channel: "upload lokal", duration: data.duration };
+      $("#upload-progress").classList.add("hidden");
+      $("#preview-thumb").src = "";
+      $("#preview-title").textContent = data.filename;
+      $("#preview-channel").textContent = "📁 upload lokal · " + data.size_mb + " MB";
+      $("#preview-duration").textContent = `⏱ ${fmtDur(data.duration)}`;
+      $("#preview-card").classList.remove("hidden");
+      $("#card-options").classList.remove("hidden");
+      $("#card-options").scrollIntoView({ behavior: "smooth", block: "center" });
+    } else {
+      $("#upload-progress").classList.add("hidden");
+      showError(data.detail || `Upload gagal (HTTP ${xhr.status})`, "#url-error");
+    }
+    $("#file-input").value = "";
+  };
+  xhr.onerror = () => {
+    $("#btn-upload").disabled = false;
+    $("#upload-progress").classList.add("hidden");
+    showError("Upload gagal — server tidak merespons", "#url-error");
+  };
+  xhr.send(form);
+});
+
 // ------------------------------------------------------------- fase 1: analisis
 $("#btn-analyze").addEventListener("click", startAnalyze);
 
@@ -212,10 +266,14 @@ async function startAnalyze() {
   $("#card-moments").classList.add("hidden");
   $("#card-results").classList.add("hidden");
 
+  const source = state.uploadId
+    ? { upload_id: state.uploadId }
+    : { url: $("#url-input").value.trim() };
+
   try {
     const { job_id } = await api("/api/analyze", {
       method: "POST",
-      body: JSON.stringify({ url: $("#url-input").value.trim(), ...opts }),
+      body: JSON.stringify({ ...source, ...opts }),
     });
     state.analyzeId = job_id;
     state.pollTarget = "analyze";
@@ -460,6 +518,7 @@ async function openSettings() {
     $("#set-api-key").placeholder = s.zai_api_key ? `tersimpan: ${s.zai_api_key}` : "kosongkan = mode heuristik lokal";
     $("#set-model").value = s.zai_model || "glm-4.5-flash";
     $("#set-whisper").value = s.whisper_model || "base";
+    $("#set-encoder").value = s.render_encoder || "cpu";
     $("#set-cookies-browser").value = s.cookies_browser || "";
     $("#set-cookies-file").value = s.cookies_file || "";
   } catch (err) { showError(err.message); }
@@ -472,6 +531,7 @@ $("#btn-settings-save").addEventListener("click", async () => {
   const body = {
     zai_model: $("#set-model").value.trim() || "glm-4.5-flash",
     whisper_model: $("#set-whisper").value,
+    render_encoder: $("#set-encoder").value,
     cookies_browser: $("#set-cookies-browser").value,
     cookies_file: $("#set-cookies-file").value.trim(),
   };
@@ -488,6 +548,128 @@ $("#modal-settings").addEventListener("click", (e) => {
   if (e.target === e.currentTarget) $("#modal-settings").classList.add("hidden");
 });
 
+// ------------------------------------------------------------- channel monitor
+async function loadChannels() {
+  try {
+    const data = await api("/api/channels");
+    $("#ch-auto-toggle").checked = data.auto;
+    const list = $("#ch-list");
+    list.innerHTML = "";
+    data.channels.forEach((ch) => {
+      const row = document.createElement("div");
+      row.className = "ch-row";
+      const last = ch.last_check
+        ? ` · cek terakhir ${new Date(ch.last_check * 1000).toLocaleTimeString("id", { hour: "2-digit", minute: "2-digit" })}`
+        : "";
+      row.innerHTML = `
+        <span class="name">${escapeHtml(ch.name)}</span>
+        <span class="meta">${last}</span>
+        <button class="btn btn-ghost btn-sm ch-check" data-id="${ch.id}">🔍 Cek</button>
+        <button class="btn btn-ghost btn-sm ch-del" data-id="${ch.id}">🗑️</button>`;
+      row.querySelector(".ch-check").addEventListener("click", () => checkChannel(ch.id, ch.name));
+      row.querySelector(".ch-del").addEventListener("click", async () => {
+        await api(`/api/channels/${ch.id}`, { method: "DELETE" });
+        loadChannels();
+      });
+      list.appendChild(row);
+    });
+  } catch (err) { /* server offline saat load awal — abaikan */ }
+}
+
+async function checkChannel(id, name) {
+  try {
+    const r = await api(`/api/channels/${id}/check`, { method: "POST" });
+    if (r.found === 0) showError(`Tidak ada video baru di "${name}"`, "#global-error");
+    else showError(`✅ ${r.found} video baru ditemukan — ${r.processed} langsung diproses (lihat Riwayat job)`, "#global-error");
+    loadChannels();
+    pollHistory();
+  } catch (err) { showError(err.message); }
+  setTimeout(hideError, 6000);
+}
+
+$("#btn-ch-add").addEventListener("click", async () => {
+  const url = $("#ch-url").value.trim();
+  hideError();
+  if (!url) return;
+  try {
+    await api("/api/channels", { method: "POST", body: JSON.stringify({ url }) });
+    $("#ch-url").value = "";
+    loadChannels();
+  } catch (err) { showError(err.message); setTimeout(hideError, 6000); }
+});
+
+$("#ch-auto-toggle").addEventListener("change", async (e) => {
+  try {
+    await api("/api/channels/auto", { method: "POST", body: JSON.stringify({ enabled: e.target.checked }) });
+  } catch (err) { e.target.checked = !e.target.checked; showError(err.message); }
+});
+
+$("#btn-ch-refresh").addEventListener("click", async () => {
+  $("#btn-ch-refresh").disabled = true;
+  try {
+    const results = await api("/api/channels/check-all", { method: "POST" });
+    const total = results.reduce((s, r) => s + r.found, 0);
+    showError(total ? `✅ ${total} video baru ditemukan — proses jalan (lihat Riwayat job)` : "Tidak ada video baru di semua channel",
+      "#global-error");
+    loadChannels();
+    pollHistory();
+  } catch (err) { showError(err.message); }
+  $("#btn-ch-refresh").disabled = false;
+  setTimeout(hideError, 6000);
+});
+
+// ------------------------------------------------------------- riwayat job
+function statusLabel(j) {
+  const s = j.status === "running" ? j.stage_label || "berjalan" : j.status;
+  return { done: "✅ selesai", failed: "❌ gagal", queued: "⏳ antre", running: `⏱ ${s}` }[j.status] || s;
+}
+
+function renderHistory(jobs) {
+  const list = $("#history-list");
+  list.innerHTML = "";
+  if (!jobs.length) {
+    list.innerHTML = '<p class="hint">Belum ada job. Mulai dari langkah 1, atau via Channel monitor.</p>';
+    return;
+  }
+  jobs.forEach((j) => {
+    const row = document.createElement("div");
+    row.className = "hist-row";
+    const title = (j.video && j.video.title) || j.id;
+    const canOpen = j.status === "done" && ((j.clips && j.clips.length) || (j.moments && j.moments.length));
+    row.innerHTML = `
+      <span class="hist-status ${j.status}">${statusLabel(j)}</span>
+      <span class="hist-title" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+      <div class="hist-bar"><div style="width:${Math.round(j.progress)}%"></div></div>
+      ${canOpen ? '<button class="btn btn-ghost btn-sm hist-open">📂 Hasil</button>' : ""}`;
+    if (canOpen) {
+      row.querySelector(".hist-open").addEventListener("click", () => openJobResult(j.id));
+    }
+    list.appendChild(row);
+  });
+}
+
+async function openJobResult(jobId) {
+  try {
+    const job = await api(`/api/jobs/${jobId}`);
+    if (job.clips && job.clips.length) {
+      state.jobId = jobId;
+      $("#progress-title").textContent = "🎉 Selesai!";
+      renderResults(job);
+    } else if (job.moments && job.moments.length) {
+      state.analyzeId = jobId;
+      state.moments = job.moments;
+      renderMoments();
+    }
+  } catch (err) { showError(err.message); }
+}
+
+function pollHistory() {
+  api("/api/jobs").then(renderHistory).catch(() => {});
+  setTimeout(pollHistory, 5000);
+}
+
 // ------------------------------------------------------------- init
 setSubStyle("karaoke");
 checkHealth();
+loadChannels();
+pollHistory();

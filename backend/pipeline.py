@@ -55,16 +55,42 @@ def _ffmpeg_threads() -> int:
 
 def run(job_id: str) -> None:
     params = jobs.get_job(job_id)["params"]
-    if params.get("kind", "analyze") == "analyze":
+    kind = params.get("kind", "analyze")
+    if kind == "analyze":
         run_analyze(job_id, params)
+    elif kind == "auto_clip":
+        _run_auto_clip(job_id, params)
     else:
         run_render(job_id, params)
+
+
+def _run_auto_clip(job_id: str, params: dict) -> None:
+    """Satu job penuh untuk channel monitor: analisis → render top momen otomatis."""
+    run_analyze(job_id, params)
+    job = jobs.get_job(job_id)
+    moments = sorted(job.get("moments") or [], key=lambda m: -m.get("score", 0))
+    top = moments[:max(1, int(params.get("clip_count", 3)))]
+    if not top:
+        raise RuntimeError("Tidak ada momen untuk di-render otomatis dari video ini")
+    jobs.log_line(job_id, f"Auto-clip: merender {len(top)} klip terbaik otomatis")
+    run_render(job_id, {**params, "moments": top, "analysis_id": job_id},
+               progress_start=66.0)
 
 
 # ------------------------------------------------------------------ fase 1
 def run_analyze(job_id: str, params: dict) -> None:
     url = params.get("url", "").strip()
-    if not downloader.is_valid_url(url):
+    upload_id = params.get("upload_id") or ""
+
+    # ---------- sumber: file upload lokal ATAU link YouTube
+    if upload_id:
+        up_dir = Path(settings.get("output_dir")) / "uploads" / upload_id
+        video_path = next((p for p in sorted(up_dir.glob("source.*"))), None)
+        if not video_path:
+            raise ValueError("File upload tidak ditemukan — ulangi upload")
+    elif downloader.is_valid_url(url):
+        video_path = None  # diunduh di bawah
+    else:
         raise ValueError("Link YouTube tidak valid. Contoh: https://www.youtube.com/watch?v=XXXXXXXXXXX")
 
     _cleanup_stale_caches()
@@ -77,18 +103,32 @@ def run_analyze(job_id: str, params: dict) -> None:
 
     jobs.log_line(job_id, f"Analisis dimulai: cari {n_proposals} kandidat momen terbaik")
 
-    # ---------- 1. download (0-30%)
-    jobs.update(job_id, stage="unduh", stage_label="Mengunduh video", progress=1.0,
-                message="Menghubungi YouTube…")
-    meta = downloader.get_metadata(url)
+    # ---------- 1. sumber video (0-30%)
+    if upload_id:
+        jobs.update(job_id, stage="unduh", stage_label="Menyiapkan file", progress=28.0,
+                    message="File lokal siap")
+        meta = {
+            "title": video_path.stem,
+            "duration": int(renderer.probe_duration(video_path)),
+            "channel": "upload lokal",
+            "thumbnail": "",
+            "url": "",
+        }
+        jobs.log_line(job_id, f"Video lokal: {video_path.name} ({meta['duration'] // 60}m{meta['duration'] % 60:02d}s)")
+    else:
+        jobs.update(job_id, stage="unduh", stage_label="Mengunduh video", progress=1.0,
+                    message="Menghubungi YouTube…")
+        meta = downloader.get_metadata(url)
+        jobs.log_line(job_id, f"Video: {meta['title']} ({meta['duration'] // 60}m{meta['duration'] % 60:02d}s) — {meta['channel']}")
+
     jobs.update(job_id, video=meta)
-    jobs.log_line(job_id, f"Video: {meta['title']} ({meta['duration'] // 60}m{meta['duration'] % 60:02d}s) — {meta['channel']}")
     if meta["duration"] < 30:
         raise ValueError("Video terlalu pendek (minimal 30 detik) untuk di-auto-clip.")
     if meta["duration"] > 3 * 3600:
         raise ValueError("Video terlalu panjang (maksimal 3 jam) untuk di-auto-clip.")
 
-    video_path = downloader.download(url, tmp_dir, max_height=1080, job_id=job_id)
+    if not upload_id:
+        video_path = downloader.download(url, tmp_dir, max_height=1080, job_id=job_id)
 
     # ---------- 2. transkripsi (30-55%)
     try:
@@ -127,7 +167,7 @@ def run_analyze(job_id: str, params: dict) -> None:
 
 
 # ------------------------------------------------------------------ fase 2
-def run_render(job_id: str, params: dict) -> None:
+def run_render(job_id: str, params: dict, progress_start: float = 5.0) -> None:
     analysis_id = params.get("analysis_id", "")
     out_root = Path(settings.get("output_dir"))
     analysis_dir = out_root / analysis_id
@@ -169,7 +209,7 @@ def run_render(job_id: str, params: dict) -> None:
                           f"platform {', '.join(platforms)}, subtitle {'ON' if sub_on else 'OFF'}, "
                           f"encoder {renderer._encoder_label()}")
     jobs.update(job_id, stage="render", stage_label="Merender klip",
-                progress=5.0, message="Merender klip…", video=meta)
+                progress=progress_start, message="Merender klip…", video=meta)
 
     audio_words = [w for s in segments for w in (s.get("words") or [])]
     clips = []
@@ -224,7 +264,8 @@ def run_render(job_id: str, params: dict) -> None:
             except Exception as e:  # noqa: BLE001 — satu klip gagal tak harus gagalkan semuanya
                 jobs.log_line(job_id, f"[ERROR] Klip {i} gagal dirender: {e}")
             done += 1
-            jobs.update(job_id, progress=round(5.0 + 94.0 * done / len(moments), 1),
+            jobs.update(job_id, progress=round(progress_start + (99.0 - progress_start)
+                                                * done / len(moments), 1),
                         message=f"Klip {done}/{len(moments)} selesai")
 
     clips.sort(key=lambda c: c["index"])
@@ -284,12 +325,12 @@ def _valid_moment(m: dict) -> bool:
 
 
 def _cleanup_stale_caches() -> None:
-    """Buang cache video sumber analyze yang sudah > 2 jam."""
+    """Buang cache video sumber & upload yang sudah > 2 jam."""
     now = time.time()
     out_root = Path(settings.get("output_dir"))
     if not out_root.exists():
         return
-    for tmp in out_root.glob("*/tmp"):
+    for tmp in list(out_root.glob("*/tmp")) + list(out_root.glob("uploads/*")):
         try:
             if now - tmp.stat().st_mtime > _CACHE_MAX_AGE_S:
                 shutil.rmtree(tmp, ignore_errors=True)

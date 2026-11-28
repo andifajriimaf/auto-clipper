@@ -22,7 +22,7 @@ def is_valid_url(url: str) -> bool:
     return bool(_URL_RE.match(url.strip()))
 
 
-def _base_opts() -> dict:
+def base_opts() -> dict:
     """Opsi yt-dlp dasar + cookies (untuk lolos deteksi bot YouTube).
 
     Sumber cookies bisa dua: dari browser terpasang (cookies_browser) atau
@@ -60,7 +60,7 @@ def _friendly_error(e: Exception) -> str:
 
 def get_metadata(url: str) -> dict:
     """Metadata ringan tanpa download (judul, durasi, thumbnail, channel)."""
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_base_opts()}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **base_opts()}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -128,7 +128,7 @@ def download(url: str, dest_dir: Path, max_height: int, job_id: str) -> Path:
         "concurrent_fragment_downloads": 8,
         # solver challenge YouTube (butuh deno; komponen resmi dari GitHub yt-dlp)
         "remote_components": ["ejs:github"],
-        **_base_opts(),
+        **base_opts(),
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:

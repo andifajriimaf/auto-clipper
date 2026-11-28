@@ -17,7 +17,9 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import jobs
+import cv2
+
+from . import jobs, settings
 
 log = logging.getLogger(__name__)
 
@@ -27,15 +29,24 @@ _hw_encoder: dict | None = None  # cache hasil deteksi (None = belum dites)
 
 
 def _detect_hw_encoder() -> dict:
-    """Deteksi encoder hardware sekali per proses: qsv → fallback libx264.
+    """Deteksi encoder sesuai setting render_encoder.
 
-    Tes berupa encode 0.5 detik nyata — bukan sekadar cek daftar encoder —
+    - "cpu"  → selalu libx264 (tidak menyentuh GPU — paling stabil)
+    - "auto" → QSV kalau tersedia, fallback libx264
+    - "qsv"  → paksa QSV (untuk mesin yang tidak bermasalah)
+
+    Tes QSV berupa encode 0.5 detik nyata — bukan sekadar cek daftar encoder —
     supaya driver bermasalah pun tertangkap. low_power dipakai kalau didukung:
     encode berpindah ke blok hardware khusus (VDENC) sehingga tidak berebut
-    unit grafis dengan tampilan layar (mencegah layar kedap-kedip).
+    unit grafis dengan tampilan layar.
     """
     global _hw_encoder
     if _hw_encoder is not None:
+        return _hw_encoder
+
+    pref = (settings.get("render_encoder") or "cpu").strip().lower()
+    if pref == "cpu":
+        _hw_encoder = {"type": "x264"}
         return _hw_encoder
 
     def _try(extra: list[str]) -> bool:
@@ -110,13 +121,139 @@ def probe_duration(path: Path) -> float:
         return 0.0
 
 
+def probe_dimensions(path: Path) -> tuple[int, int]:
+    """(lebar, tinggi) video sumber."""
+    p = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True,
+        creationflags=_WIN_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+    )
+    try:
+        w, h = p.stdout.strip().split(",")
+        return int(w), int(h)
+    except ValueError:
+        return 0, 0
+
+
+# ---------------------------------------------------------- face tracking
+_FACE_CASCADE = None
+
+
+def _face_cascade():
+    """Haar cascade bawaan OpenCV — tanpa download model tambahan."""
+    global _FACE_CASCADE
+    if _FACE_CASCADE is None:
+        _FACE_CASCADE = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+    return _FACE_CASCADE
+
+
+def _detect_face_keyframes(video: Path, start: float, end: float, work: Path,
+                           job_id: str) -> list[tuple[float, float]] | None:
+    """Deteksi posisi wajah sepanjang [start,end]: sample 2 frame/detik pada
+    480px, ambil wajah TERBESAR (pembicara terdekat) di tiap frame.
+
+    Return list (t_rel, cx_norm) — posisi horizontal tengah wajah 0..1 —
+    atau None kalau wajah tidak cukup terdeteksi (fallback ke crop tengah).
+    """
+    fps = 2
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        _run([
+            "ffmpeg", "-y", "-v", "error",
+            "-ss", f"{start:.3f}", "-t", f"{end - start:.3f}", "-i", str(video),
+            "-vf", f"fps={fps},scale=480:-2", "-q:v", "5",
+            str(work / "f_%03d.jpg"),
+        ], cwd=work)
+    except Exception as e:  # noqa: BLE001 — fallback tengah kalau gagal
+        jobs.log_line(job_id, f"[WARN] Ekstraksi frame wajah gagal: {e}")
+        return None
+
+    cascade = _face_cascade()
+    samples: list[tuple[float, float]] = []
+    for i, fp in enumerate(sorted(work.glob("f_*.jpg"))):
+        img = cv2.imread(str(fp))
+        if img is None:
+            continue
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5,
+                                         minSize=(int(img.shape[1] * 0.08),) * 2)
+        if len(faces):
+            x, y, w, h = max(faces, key=lambda f: f[2] * f[3])  # wajah terbesar
+            samples.append((i / fps, (x + w / 2) / img.shape[1]))
+    for fp in work.glob("f_*.jpg"):
+        fp.unlink(missing_ok=True)
+
+    if len(samples) < max(3, (end - start) * 0.25):  # wajah jarang muncul → center
+        return None
+    return samples
+
+
+def _build_face_crop_expr(samples: list[tuple[float, float]], dur: float,
+                          width: int, height: int, src_w: int, src_h: int) -> str:
+    """Bangun ekspresi x untuk filter crop yang mengikuti wajah.
+
+    Alur: posisi wajah (0..1) → koordinat frame setelah scale-to-cover →
+    posisi crop window → smoothing (rata bergerak) → interpolar linear
+    per ~1 detik sebagai ekspresi nested-if ffmpeg (evaluasi per-frame).
+    """
+    factor = max(width / src_w, height / src_h)
+    scaled_w = src_w * factor
+    max_x = max(0.0, scaled_w - width)
+
+    def to_x(cx_norm: float) -> float:
+        return max(0.0, min(cx_norm * scaled_w - width / 2, max_x))
+
+    # smoothing: rata bergerak 3 titik
+    xs = [s[1] for s in samples]
+    sm = []
+    for i, s in enumerate(samples):
+        lo, hi = max(0, i - 1), min(len(xs), i + 2)
+        sm.append((s[0], sum(xs[lo:hi]) / (hi - lo)))
+
+    # keyframes ~1 detik: interpolasi linear antar sample
+    keys: list[tuple[float, float]] = []
+    t_cursor = 0.0
+    si = 0
+    while t_cursor < dur and si < len(sm):
+        t_next = min(dur, t_cursor + 1.0)
+        while si + 1 < len(sm) and sm[si + 1][0] <= t_cursor:
+            si += 1
+        # cari nilai pada t_next (interpolasi antar sample di sekitarnya)
+        a_i = max(0, min(si, len(sm) - 1))
+        if a_i + 1 < len(sm) and sm[a_i + 1][0] > sm[a_i][0]:
+            ratio = (t_next - sm[a_i][0]) / (sm[a_i + 1][0] - sm[a_i][0])
+            cx = sm[a_i][1] + (sm[a_i + 1][1] - sm[a_i][1]) * min(1.0, max(0.0, ratio))
+        else:
+            cx = sm[a_i][1]
+        keys.append((t_cursor, to_x(cx)))
+        t_cursor = t_next
+    if not keys:
+        return ""
+    keys.append((dur, keys[-1][1]))  # jaga posisi terakhir sampai habis
+
+    # ekspresi nested-if dengan interpolasi linear antar keyframe
+    expr = str(keys[-1][1])
+    for i in range(len(keys) - 2, -1, -1):
+        t0, x0 = keys[i]
+        t1, x1 = keys[i + 1]
+        seg = f"{x0}+({x1}-{x0})*(t-{t0:.2f})/{max(0.01, t1 - t0):.2f}"
+        expr = f"if(lte(t,{t0:.2f}),{seg},{expr})"
+    return f"max(0,min({expr},{max_x:.0f}))"
+
+
+
 # ------------------------------------------------------------------ ASS
 def generate_ass(words: list[dict], clip_start: float, clip_end: float,
                  out_path: Path, style: str, width: int, height: int) -> bool:
     """Buat file .ass dari kata-kata dalam jendela klip.
 
-    style: "klasik"  → 1 baris kalimat, putih bold outline hitam
+    style: "klasik"  → kalimat putih bold outline hitam
            "karaoke" → highlight kata aktif kuning ala TikTok (tag \\k)
+           "box"     → teks dalam kotak solid
+           "glow"    → teks dengan glow kuning lembut
+           "word"    → satu kata besar per layar (TikTok style)
     Return True kalau ada subtitle, False kalau jendela tanpa kata.
     """
     in_window = [w for w in words if w["start"] < clip_end and w["end"] > clip_start]
@@ -124,13 +261,20 @@ def generate_ass(words: list[dict], clip_start: float, clip_end: float,
         return False
 
     fs = int(height * 0.045)          # ukuran font proporsional tinggi video
+    if style == "word":
+        fs = int(height * 0.075)      # satu kata per layar → jauh lebih besar
     margin_v = int(height * 0.16)     # aman dari UI TikTok/Reels di bawah
-    if style == "karaoke":
-        header = _ass_header_karaoke(width, height, fs)
-        events = _events_karaoke(in_window, clip_start, clip_end, margin_v)
-    else:
-        header = _ass_header_klasik(width, height, fs)
-        events = _events_klasik(in_window, clip_start, clip_end, margin_v)
+
+    dispatch = {
+        "klasik":  (_ass_header_klasik, _events_klasik),
+        "karaoke": (_ass_header_karaoke, _events_karaoke),
+        "box":     (_ass_header_box, _events_box),
+        "glow":    (_ass_header_glow, _events_glow),
+        "word":    (_ass_header_word, _events_word),
+    }
+    header_fn, events_fn = dispatch.get(style, (_ass_header_klasik, _events_klasik))
+    header = header_fn(width, height, fs)
+    events = events_fn(in_window, clip_start, clip_end, margin_v)
 
     out_path.write_text(header + "\n[Events]\n" + "\n".join(events), encoding="utf-8")
     return True
@@ -200,6 +344,93 @@ def _events_klasik(words, clip_start, clip_end, margin_v) -> list[str]:
         text = " ".join(w["word"].strip() for w in line).upper()
         text = text.replace("{", "").replace("}", "")
         events.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Pop,,0,0,0,,{text}")
+    return events
+
+
+def _ass_header_box(w: int, h: int, fs: int) -> str:
+    # BorderStyle=3 = kotak solid di belakang teks (warna = OutlineColour)
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Box,Arial Black,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,3,{int(fs * 0.25)},0,2,60,60,{int(h * 0.16)},1
+"""
+
+
+def _events_box(words, clip_start, clip_end, margin_v) -> list[str]:
+    return _events_klasik(words, clip_start, clip_end, margin_v)
+
+
+def _ass_header_glow(w: int, h: int, fs: int) -> str:
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Glow,Arial Black,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,0,2,60,60,{int(h * 0.16)},1
+"""
+
+
+def _events_glow(words, clip_start, clip_end, margin_v) -> list[str]:
+    """Dua layer per baris: layer 0 = glow kuning blur, layer 1 = teks tajam."""
+    events = []
+    for line in _group_lines(words):
+        start = max(0.0, line[0]["start"] - clip_start)
+        end = min(clip_end - clip_start, line[-1]["end"] - clip_start)
+        if end <= start:
+            continue
+        text = " ".join(w["word"].strip() for w in line).upper()
+        text = text.replace("{", "").replace("}", "")
+        # layer 0: glow kuning besar + blur (di belakang)
+        events.append(
+            f"Dialogue: 0,{_ts(start)},{_ts(end)},Glow,,0,0,0,,"
+            f"{{\\blur14\\1c&H0000E1FF&\\alpha&H30&}}{text}")
+        # layer 1: teks tajam putih outline hitam (di atas glow)
+        events.append(f"Dialogue: 1,{_ts(start)},{_ts(end)},Glow,,0,0,0,,{text}")
+    return events
+
+
+def _ass_header_word(w: int, h: int, fs: int) -> str:
+    # Alignment 5 = tengah-tengah layar; kata besar ala TikTok
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {w}
+PlayResY: {h}
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Word,Arial Black,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,{int(fs * 0.14)},0,5,40,40,0,1
+"""
+
+
+def _events_word(words, clip_start, clip_end, margin_v) -> list[str]:
+    """Satu kata besar per layar — tampil sampai kata berikutnya mulai."""
+    words = sorted(words, key=lambda w: w["start"])
+    events = []
+    for i, w in enumerate(words):
+        start = max(0.0, w["start"] - clip_start)
+        next_start = words[i + 1]["start"] - clip_start if i + 1 < len(words) else None
+        end = min(clip_end - clip_start,
+                  next_start if next_start is not None else w["end"] - clip_start + 0.4)
+        if end <= start:
+            end = start + 0.25
+        if end <= start:
+            continue
+        text = w["word"].strip().upper().replace("{", "").replace("}", "")
+        if not text:
+            continue
+        events.append(f"Dialogue: 0,{_ts(start)},{_ts(end)},Word,,0,0,0,,{text}")
     return events
 
 
@@ -291,6 +522,35 @@ def _render_segment(video: Path, moment: dict, out_path: Path, tmp_dir: Path,
         "-movflags", "+faststart",
         "-r", "30",
     ]
+
+    if layout == "crop_face":
+        # crop dinamis mengikuti wajah pembicara (fallback tengah kalau
+        # wajah tidak cukup terdeteksi)
+        src_w, src_h = probe_dimensions(video)
+        keys = _detect_face_keyframes(video, start, end, tmp_dir, job_id) if src_w else None
+        if keys is None:
+            jobs.log_line(job_id, f"[INFO] '{str(moment.get('title', ''))[:40]}': "
+                                  f"wajah tidak terdeteksi stabil → crop tengah")
+            layout = "crop"
+        else:
+            expr = _build_face_crop_expr(keys, dur, width, height, src_w, src_h)
+            if not expr:
+                layout = "crop"
+            else:
+                vf = (
+                    f"scale={width}:{height}:force_original_aspect_ratio=increase,"
+                    f"crop={width}:{height}:x='{expr}':y=0,setsar=1"
+                )
+                if ass_file:
+                    vf += f",subtitles=filename={ass_file.name}"
+                args = [
+                    "ffmpeg", "-y",
+                    "-ss", f"{start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
+                    "-vf", vf,
+                    *codec, str(out_path),
+                ]
+                _run(args, cwd=tmp_dir)
+                return
 
     if layout == "blur":
         # gambar utuh di tengah + sisi diisi versi blur dari video itu sendiri.

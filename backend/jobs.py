@@ -19,6 +19,7 @@ def create_job(params: dict) -> str:
     job_id = uuid.uuid4().hex[:12]
     job = {
         "id": job_id,
+        "kind": params.get("kind", "analyze"),  # analyze | render | auto_clip
         "status": "queued",           # queued | running | done | failed
         "stage": "antre",             # antre|unduh|transkripsi|analisis|render|selesai
         "stage_label": "Menunggu antrean",
@@ -96,7 +97,31 @@ def _worker_loop() -> None:
         run_pipeline_fn(job_id, pipeline.run)
 
 
+def cancel_job(job_id: str) -> bool:
+    """Batalkan job yang masih antre. Return False kalau sudah berjalan/tak ada."""
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return False
+        if job["status"] != "queued":
+            return False
+        try:
+            _queue.remove(job_id)
+        except ValueError:
+            pass
+        job["status"] = "failed"
+        job["stage"] = "dibatalkan"
+        job["stage_label"] = "Dibatalkan"
+        job["error"] = "Dibatalkan oleh user"
+        return True
+
+
 def list_jobs(limit: int = 20) -> list[dict]:
     with _lock:
         jobs = sorted(_jobs.values(), key=lambda j: j["created"], reverse=True)
-        return [dict(j) for j in jobs[:limit]]
+        out = []
+        for j in jobs[:limit]:
+            j = dict(j)
+            j.pop("params", None)  # tidak perlu dikirim balik
+            out.append(j)
+        return out

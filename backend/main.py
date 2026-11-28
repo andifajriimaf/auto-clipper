@@ -2,21 +2,28 @@
 import logging
 import os
 import shutil
+import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import downloader, jobs, settings
+from . import channels, downloader, jobs, renderer, settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
 log = logging.getLogger("main")
 
 _STATIC = Path(__file__).resolve().parent / "static"
+_UPLOAD_EXTS = (".mp4", ".mkv", ".webm", ".mov", ".avi")
 
 app = FastAPI(title="AutoClipper", docs_url=None, redoc_url=None)
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    channels.start_auto_loop()
 
 
 # ------------------------------------------------------------------ models
@@ -25,8 +32,13 @@ class PreviewReq(BaseModel):
 
 
 class AnalyzeReq(BaseModel):
-    """Fase 1: cari rekomendasi momen (unduh + transkripsi + analisis AI)."""
-    url: str
+    """Fase 1: cari rekomendasi momen (unduh + transkripsi + analisis AI).
+
+    Sumber video: url YouTube ATAU upload_id dari /api/upload.
+    """
+    url: str = ""
+    upload_id: str | None = None
+    kind: str = "analyze"                # analyze | auto_clip (channel monitor)
     platforms: list[str] = Field(default=["shorts"])
     resolution: str = "720"              # 720 | 1080
     ratio: str = "9:16"                  # 9:16 | 1:1 | 16:9
@@ -57,6 +69,7 @@ class SettingsReq(BaseModel):
     whisper_model: str | None = None
     cookies_browser: str | None = None
     cookies_file: str | None = None
+    render_encoder: str | None = None
 
 
 # ------------------------------------------------------------------ api
@@ -96,14 +109,49 @@ def preview(req: PreviewReq):
         raise HTTPException(400, f"Gagal membaca video: {str(e)[:200]}")
 
 
+@app.post("/api/upload")
+async def upload_video(file: UploadFile = File(...)):
+    """Upload video lokal untuk di-clip tanpa link YouTube."""
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _UPLOAD_EXTS:
+        raise HTTPException(400, "Format harus mp4/mkv/webm/mov/avi")
+    uid = uuid.uuid4().hex[:12]
+    dest = Path(settings.get("output_dir")) / "uploads" / uid
+    dest.mkdir(parents=True, exist_ok=True)
+    path = dest / f"source{ext}"
+    size = 0
+    try:
+        with path.open("wb") as w:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                w.write(chunk)
+    except Exception:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise HTTPException(500, "Upload gagal tersimpan")
+    dur = renderer.probe_duration(path)
+    if dur < 30:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise HTTPException(400, f"Video terlalu pendek ({dur:.0f}s) — minimal 30 detik")
+    return {"upload_id": uid, "filename": file.filename,
+            "duration": int(dur), "size_mb": round(size / 1e6, 1)}
+
+
 @app.post("/api/analyze")
 def start_analyze(req: AnalyzeReq):
     url = req.url.strip()
-    if not downloader.is_valid_url(url):
-        raise HTTPException(400, "Link YouTube tidak valid")
+    if not req.upload_id and not downloader.is_valid_url(url):
+        raise HTTPException(400, "Link YouTube tidak valid — atau pakai upload video")
     if req.ratio not in ("9:16", "1:1", "16:9"):
         raise HTTPException(400, "Rasio tidak didukung")
-    job_id = jobs.create_job({**req.model_dump(), "kind": "analyze"})
+    if req.layout not in ("blur", "crop", "crop_face"):
+        raise HTTPException(400, "Layout tidak didukung")
+    if req.upload_id:
+        # pastikan file upload masih ada
+        up = Path(settings.get("output_dir")) / "uploads" / req.upload_id
+        if not up.is_dir() or not any(up.iterdir()):
+            raise HTTPException(400, "File upload tidak ditemukan — ulangi upload")
+    kind = req.kind if req.kind in ("analyze", "auto_clip") else "analyze"
+    job_id = jobs.create_job({**req.model_dump(), "kind": kind})
     return {"job_id": job_id}
 
 
@@ -131,6 +179,61 @@ def job_status(job_id: str):
 @app.get("/api/jobs")
 def recent_jobs():
     return [j for j in jobs.list_jobs()]
+
+
+# ------------------------------------------------------------------ channels
+class ChannelReq(BaseModel):
+    url: str
+
+
+@app.get("/api/channels")
+def get_channels():
+    return {"channels": channels.list_channels(), "auto": channels.is_auto()}
+
+
+@app.post("/api/channels")
+def add_channel(req: ChannelReq):
+    try:
+        ch = channels.add_channel(req.url)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return ch
+
+
+@app.delete("/api/channels/{cid}")
+def delete_channel(cid: str):
+    channels.remove_channel(cid)
+    return {"ok": True}
+
+
+@app.post("/api/channels/auto")
+def set_channel_auto(req: dict):
+    channels.set_auto(bool(req.get("enabled")))
+    channels.start_auto_loop()
+    return {"auto": channels.is_auto()}
+
+
+@app.post("/api/channels/{cid}/check")
+def check_channel(cid: str):
+    try:
+        return channels.check_channel(cid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/channels/check-all")
+def check_all_channels():
+    try:
+        return channels.check_all(force=True)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(500, str(e)[:200])
+
+
+@app.delete("/api/jobs/{job_id}")
+def cancel_job(job_id: str):
+    if not jobs.cancel_job(job_id):
+        raise HTTPException(400, "Job sudah berjalan/selesai — tidak bisa dibatalkan")
+    return {"ok": True}
 
 
 @app.get("/api/settings")

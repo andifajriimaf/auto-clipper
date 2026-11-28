@@ -11,14 +11,20 @@ Aplikasi lokal untuk mengubah video YouTube menjadi klip vertikal (9:16) siap up
 - 🤖 **2 mode pemilihan momen**:
   - **AI (gratis)** — transkrip dianalisis GLM Flash via API Z.ai (model Flash gratis, cukup daftar API key)
   - **Heuristik lokal** — tanpa API key, milih berdasar kepadatan bicara (jalan offline)
-- 💡 **Preview video per momen** — lihat & putar tiap momen dulu sebelum memilih
-- 📝 **Subtitle otomatis** — hasil transkripsi Whisper (lokal, gratis), 2 style dengan preview:
+- 💡 **Preview video per momen** — lihat & putar tiap momen dulu sebelum memilih (popup PiP)
+- 📝 **Subtitle otomatis** — hasil transkripsi Whisper (lokal, gratis), **5 style** dengan preview:
   - **Karaoke** ✨ — highlight kata per kata ala TikTok
   - **Klasik** — putih bold outline hitam
+  - **Box** 📦 — teks dalam kotak solid
+  - **Glow** 💫 — teks dengan glow kuning lembut
+  - **1 Word** 1️⃣ — satu kata besar per layar
 - 📐 **3 rasio** — 9:16 vertikal (rekomendasi), 1:1 kotak, 16:9 landscape — 720p/1080p
-- 🖼️ **2 layout** — **Full + Blur** (gambar utuh, sisi diisi blur, tidak terpotong — rekomendasi) atau Crop tengah
+- 🖼️ **3 layout** — **Full + Blur** (gambar utuh, sisi blur, tidak terpotong — rekomendasi), **🎯 Crop ikut wajah** (crop mengikuti posisi wajah pembicara, offline via deteksi wajah), atau Crop tengah
 - ⏱️ **Durasi via tombol** — 15 / 30 / 60 detik
 - 🏷️ **Caption + hashtag per platform** — pilih Reels/TikTok/Shorts, tiap platform dapat caption sendiri di hasil
+- 📁 **Upload video sendiri** — clip video dari laptop (mp4/mkv/webm/mov/avi), tanpa perlu link
+- 📺 **Channel monitor** — pantau channel favorit, video baru otomatis di-clip + riwayat job
+- ⚙️ **Pilihan encoder** — CPU (stabil) atau Intel QSV/GPU (lebih cepat)
 
 ## Instalasi
 
@@ -59,6 +65,8 @@ Server jalan di [http://127.0.0.1:8765](http://127.0.0.1:8765) dan browser terbu
 | **API key Z.ai** | Daftar gratis di [z.ai](https://z.ai) → API Keys → buat key. Untuk momen terpilih AI. Kosong = heuristik lokal. |
 | **Model AI** | Default `glm-4.5-flash` (gratis). Bisa diisi model Flash lain. |
 | **Model Whisper** | `tiny` paling cepat; `base` cepat (default); **`small` lebih akurat untuk Bahasa Indonesia**; `medium` paling akurat tapi lambat. |
+| **Encoder render** | `CPU` paling stabil (default); `GPU Intel QSV` lebih cepat tapi di beberapa driver bisa bikin layar kedap-kedip saat render. |
+| **Cookies YouTube** | Untuk video yang diblokir deteksi bot (lihat troubleshooting). |
 
 API key tersimpan di `auto-clipper/config.json` (lokal, tidak dikirim ke mana pun selain Z.ai saat analisis).
 
